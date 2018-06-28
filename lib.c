@@ -307,6 +307,7 @@ void phone(options_t *o) {
     pthread_join(tid1, NULL);
     pthread_join(tid2, NULL);
 
+    sox_format_quit();
     sox_quit();
 }
 
