@@ -33,8 +33,7 @@ void print_help(char *filename) {
 
 void serv(options_t *o) {
     int ss = listen_to(o->port);
-    int s = acp(ss);
-    o->fd = s;
+    o->fd = acp(ss);
     phone(o);
     close(ss);
 }
