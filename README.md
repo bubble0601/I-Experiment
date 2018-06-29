@@ -26,4 +26,5 @@ parseでコマンドライン引数をoptions_tに保存する
 
 ## 使用例
 ./phone 10000 -p
+
 ./phone 127.0.0.1 10000 > /dev/null
