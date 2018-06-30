@@ -1,4 +1,4 @@
-#include "lib.c"
+#include "lib.udp.c"
 
 void print_help();
 void serv(options_t*);

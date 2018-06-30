@@ -5,7 +5,7 @@ void serv(options_t*);
 void client(options_t*);
 
 int main(int argc, char *argv[]) {
-    options_t o = { TRUE, -1, NULL, FALSE, 300, 3400, -1 };
+    options_t o;
     int status = parse(argc, argv, &o);
 
     if (status == -1) {
@@ -27,8 +27,6 @@ void print_help(char *filename) {
     fprintf(stderr, "\n");
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -p            output received data to sound device (default: output to stdout)\n");
-    fprintf(stderr, "  -lf <freq>    specify lower cutoff frequency (default: 300)\n");
-    fprintf(stderr, "  -uf <freq>    specify upper cutoff frequency (default: 3400)\n");
 }
 
 void serv(options_t *o) {

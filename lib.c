@@ -72,7 +72,9 @@ char getch() {
  */
 int parse(int argc, char *argv[], options_t *o) {
     if (argc < 2) return -1;
-    
+
+    init(o);
+
     // parse
     // port, address
     if (argc == 2) {
@@ -92,24 +94,6 @@ int parse(int argc, char *argv[], options_t *o) {
     for (; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0) {
             o->play = TRUE;
-        } else if (strcmp(argv[i], "-lf") == 0) {
-            if (i + 1 < argc) {
-                char *next = argv[++i];
-                int next_n = atoi(next);
-                if (next_n == 0 && strcmp(next, "0") != 0) return -1;
-                o->f1 = next_n;
-            } else {
-                return -1;
-            }
-        } else if (strcmp(argv[i], "-uf") == 0) {
-            if (i + 1 < argc) {
-                char *next = argv[++i];
-                int next_n = atoi(next);
-                if (next_n == 0 && strcmp(next, "0") != 0) return -1;
-                o->f2 = next_n;
-            } else {
-                return -1;
-            }
         } else {
             return -1;
         }
@@ -158,6 +142,17 @@ int acp(int ss) {
     if (s == -1) die("accept");
 
     return s;
+}
+
+/**
+ * 波形を滑らかにする & 小さい音を無音処理
+ * y_n = a * y_(n-1) + (1 - a) * x_n
+ */
+void rcfilter(short *data, float a, int th) {
+    for (int i = 1; i < N / 2; i++) {
+        data[i] = a * data[i-1] + (1 - a) * data[i];
+        if (data[i] < th) data[i] = 0;
+    }
 }
 
 int send_data(int s, short *data) {
@@ -225,9 +220,10 @@ void* async_send(void* _o) {
         }
 
         // ノイズ除去(Macの内蔵マイクには環境ノイズリダクション機能があるので不要)
-        #ifndef __APPLE__
-        filter(data, o->f1, o->f2);
-        #endif
+        // #ifndef __APPLE__
+        // filter(data, o->f1, o->f2);
+        // rcfilter(data, 0.8f, 20);
+        // #endif
 
         status = send_data(o->fd, data);
         if (status == -1) {
@@ -235,7 +231,10 @@ void* async_send(void* _o) {
             break;
         }
 
-        if (getch() == 'q' || o->quit) break;
+        if (getch() == 'q' || o->quit) {
+            o->quit = TRUE;
+            break;
+        }
     }
 
     sox_close(ftr);
@@ -278,7 +277,10 @@ void* async_recv(void* _o) {
             break;
         }
 
-        if (getch() == 'q' || o->quit) break;
+        if (getch() == 'q' || o->quit) {
+            o->quit = TRUE;
+            break;
+        }
     }
     o->quit = TRUE;
 
@@ -302,7 +304,6 @@ void phone(options_t *o) {
     if (status != 0) err(strerror(status));
 
     fprintf(stderr, "Put q to quit: ");
-    o->quit = TRUE;
 
     pthread_join(tid1, NULL);
     pthread_join(tid2, NULL);
