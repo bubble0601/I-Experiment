@@ -3,7 +3,7 @@
 #include <math.h>
 
 // must be 2*n
-#define N 1024
+#define N 128
 
 typedef short sample_t;
 

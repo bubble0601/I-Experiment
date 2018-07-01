@@ -13,8 +13,9 @@
 #include <sox.h>
 #include <sys/types.h>
 #include <pthread.h>
-#include "fft.c"
-
+#include <errno.h>
+// #include "fft.c"
+#define N 128
 #define TRUE 1
 #define FALSE 0
 
@@ -47,7 +48,7 @@ void init(options_t *o) {
     o->address = NULL;
     o->play = FALSE;
     o->f1 = 100;
-    o->f2 = 8000;
+    o->f2 = 10000;
     o->fd = -1;
     o->quit = FALSE;
 }
@@ -145,18 +146,17 @@ int acp(int ss) {
 }
 
 /**
- * 波形を滑らかにする & 小さい音を無音処理
+ * 波形を滑らかにする
  * y_n = a * y_(n-1) + (1 - a) * x_n
  */
-void rcfilter(short *data, float a, int th) {
-    for (int i = 1; i < N / 2; i++) {
-        data[i] = a * data[i-1] + (1 - a) * data[i];
-        if (data[i] < th) data[i] = 0;
+void rcfilter(short *data, float a) {
+    for (int i = 0; i < N / 2; i++) {
+        if (i > 0) data[i] = a * data[i-1] + (1 - a) * data[i];
     }
 }
 
 int send_data(int s, short *data) {
-    int status = send(s, data, N, 0);
+    int status = send(s, data, N, MSG_DONTWAIT);
     if (status == -1) perror("send");
     return status;
 }
@@ -167,6 +167,7 @@ int recv_data(int s, sox_format_t *ft) {
     if (n == 0) {
         return -1;
     } else if (n == -1) {
+        if (errno == EWOULDBLOCK) n = 0;
         perror("recv");
     } else {
         if (ft == NULL) {
@@ -220,22 +221,16 @@ void* async_send(void* _o) {
         }
 
         // ノイズ除去(Macの内蔵マイクには環境ノイズリダクション機能があるので不要)
-        // #ifndef __APPLE__
-        // filter(data, o->f1, o->f2);
-        // rcfilter(data, 0.8f, 20);
-        // #endif
+        #ifndef __APPLE__
+        rcfilter(data, 0.6f);
+        #endif
 
         status = send_data(o->fd, data);
-        if (status == -1) {
-            o->quit = TRUE;
-            break;
-        }
+        if (status == -1) break;
 
-        if (getch() == 'q' || o->quit) {
-            o->quit = TRUE;
-            break;
-        }
+        if (getch() == 'q' || o->quit) break;
     }
+    o->quit = TRUE;
 
     sox_close(ftr);
     free(data);
@@ -272,15 +267,9 @@ void* async_recv(void* _o) {
 
     while (TRUE) {
         status = recv_data(o->fd, ftw);
-        if (status == -1) {
-            o->quit = TRUE;
-            break;
-        }
+        if (status == -1) break;
 
-        if (getch() == 'q' || o->quit) {
-            o->quit = TRUE;
-            break;
-        }
+        if (getch() == 'q' || o->quit) break;
     }
     o->quit = TRUE;
 
