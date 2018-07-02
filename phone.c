@@ -65,7 +65,7 @@ int parse(options_t *o) {
             lang_help();
             return 1;
         }
-        o->voice = token;
+        strcpy(o->voice, token);
         return 1;
     }
     return -1;

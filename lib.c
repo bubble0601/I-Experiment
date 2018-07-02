@@ -1,7 +1,6 @@
 #ifndef LIB_C
 #define LIB_C
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +15,7 @@
 #include <pthread.h>
 #include <errno.h>
 
-#define N 256
+#define N 1024
 #define TRUE 1
 #define FALSE 0
 
@@ -27,7 +26,7 @@ typedef struct {
 
     int play;               // Play received data if TRUE
     char *recfile;          // filename to record sound
-    char *voice;            // speaker
+    char voice[256];            // speaker
 
     int fd;                 // file descriptor for communication
     int quit;               // end flag
@@ -49,7 +48,7 @@ void init(options_t *o) {
     o->address.s_addr = 0;
     o->play = TRUE;
     o->recfile = NULL;
-    o->voice = "Kyoko";
+    strcpy(o->voice, "Kyoko");
     o->fd = -1;
     o->quit = FALSE;
 }
@@ -289,6 +288,7 @@ void *txt(void* _o) {
         if (n == 0) o->quit = TRUE;
         say = popen(cmd, "w");
         fprintf(say, "%s\n", data);
+        memset(data, '\0', N);
         pclose(say);
     }
     return NULL;
