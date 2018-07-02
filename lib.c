@@ -16,21 +16,21 @@
 #include <pthread.h>
 #include <errno.h>
 
-#define N 128
+#define N 256
 #define TRUE 1
 #define FALSE 0
 
 typedef struct {
-    int isServer;   // Work as server if TRUE
-    int port;       // Port number
-    char *address;  // IP Address to connect
+    int isServer;           // Work as server if TRUE
+    int port;               // Port number
+    struct in_addr address; // IP Address to connect
 
-    int play;       // Play received data if TRUE
-    int f1;         // Lower cutoff frequency
-    int f2;         // Upper cutoff frequency
+    int play;               // Play received data if TRUE
+    char *recfile;          // filename to record sound
+    char *voice;            // speaker
 
-    int fd;         // file descriptor for communication
-    int quit;       // end flag
+    int fd;                 // file descriptor for communication
+    int quit;               // end flag
 } options_t;
 
 void die(char *s) {
@@ -46,12 +46,29 @@ void err(char *msg) {
 void init(options_t *o) {
     o->isServer = TRUE;
     o->port = -1;
-    o->address = NULL;
-    o->play = FALSE;
-    o->f1 = 100;
-    o->f2 = 10000;
+    o->address.s_addr = 0;
+    o->play = TRUE;
+    o->recfile = NULL;
+    o->voice = "Kyoko";
     o->fd = -1;
     o->quit = FALSE;
+}
+
+void lang_help() {
+  printf("Alex                en_US    # Most people recognize me by my voice.\n");
+  printf("Alice               it_IT    # Salve, mi chiamo Alice e sono una voce italiana.\n");
+  printf("Anna                de_DE    # Hallo, ich heiße Anna und ich bin eine deutsche Stimme.\n");
+  printf("Daniel              en_GB    # Hello, my name is Daniel. I am a British-English voice.\n");
+  printf("Fred                en_US    # I sure like being inside this fancy computer\n");
+  printf("Jorge               es_ES    # Hola, me llamo Jorge y soy una voz española.\n");
+  printf("Kyoko               ja_JP    # こんにちは、私の名前はKyokoです。日本語の音声をお届けします。\n");
+  printf("Monica              es_ES    # Hola, me llamo Monica y soy una voz española.\n");
+  printf("Samantha            en_US    # Hello, my name is Samantha. I am an American-English voice.\n");;
+  printf("Thomas              fr_FR    # Bonjour, je m’appelle Thomas. Je suis une voix française.\n");
+  printf("Ting-Ting           zh_CN    # 您好，我叫Ting-Ting。我讲中文普通话。\n");
+  printf("Victoria            en_US    # Isn't it nice to have a computer that will talk to you?\n");
+  printf("Yuna                ko_KR    # 안녕하세요. 제 이름은 Yuna입니다. 저는 한국어 음성입니다.\n");
+  printf("Yuri                ru_RU    # Здравствуйте, меня зовут Yuri. Я – русский голос системы.\n");
 }
 
 /**
@@ -64,58 +81,21 @@ char getch() {
     
     int c = getchar();
 
-    fcntl(STDIN_FILENO, F_SETFL, f);
+    fcntl(STDIN_FILENO, F_SETFL, f & ~O_NONBLOCK);
     return c;
 }
 
-/**
- * parse command line args
- * return -1 if failed to parse
- */
-int parse(int argc, char *argv[], options_t *o) {
-    if (argc < 2) return -1;
-
-    init(o);
-
-    // parse
-    // port, address
-    if (argc == 2) {
-        o->port = atoi(argv[1]);
-    } else { // argc > 2
-        if (argv[2][0] == '-') {
-            o->port = atoi(argv[1]);
-        } else {
-            o->isServer = FALSE;
-            o->address = argv[1];
-            o->port = atoi(argv[2]);
-        }
-    }
-    // options
-    int i = 2;
-    if (!o->isServer) i = 3;
-    for (; i < argc; i++) {
-        if (strcmp(argv[i], "-p") == 0) {
-            o->play = TRUE;
-        } else {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-int connect_to(char *address, int port) {
+int connect_to(struct in_addr address, int port) {
     int s = socket(PF_INET, SOCK_STREAM, 0);
     if (s == -1) die("socket");
 
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    int status = inet_aton(address, &addr.sin_addr);
-    if (status == 0) err("invalid format of ipv4 address");
     addr.sin_port = htons(port);
+    addr.sin_addr = address;
 
-    status = connect(s, (struct sockaddr*)&addr, sizeof(addr));
-    if (status != 0) die("connect");
-    fflush(stdout);
+    int status = connect(s, (struct sockaddr*)&addr, sizeof(addr));
+    if (status == -1) die("connect");
     return s;
 }
 
@@ -131,6 +111,10 @@ int listen_to(int port) {
     int status = bind(ss, (struct sockaddr*)&addr, sizeof(addr));
     if (status == -1) die("bind");
 
+    socklen_t len = sizeof(addr);
+    getsockname(ss,(struct sockaddr*)&addr, &len);
+    printf("ポート%dで", ntohs(addr.sin_port));
+
     status = listen(ss, 10);
     if (status == -1) die("listen");
 
@@ -142,6 +126,7 @@ int acp(int ss) {
     socklen_t len = sizeof(struct sockaddr_in);
     int s = accept(ss, (struct sockaddr*)&client_addr, &len);
     if (s == -1) die("accept");
+    printf("%s:%dから呼び出し\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
 
     return s;
 }
@@ -162,7 +147,7 @@ int send_data(int s, short *data) {
     return status;
 }
 
-int recv_data(int s, sox_format_t *ft) {
+int recv_data(int s, FILE *fp, sox_format_t *ft) {
     char data[N];
     int n = recv(s, data, N, 0);
     if (n == 0) {
@@ -171,9 +156,7 @@ int recv_data(int s, sox_format_t *ft) {
         if (errno == EWOULDBLOCK) n = 0;
         perror("recv");
     } else {
-        if (ft == NULL) {
-            fwrite(data, 1, N, stdout);
-        } else {
+        if (ft != NULL) {
             // 16bit, 1 channel -> 32bit, 2 channel
             sox_sample_t buf[N];
             for (int i = 0; i < N / 2; i++) {
@@ -181,6 +164,9 @@ int recv_data(int s, sox_format_t *ft) {
                 buf[2*i+1] = ((short*)data)[i] << 16;
             }
             sox_write(ft, buf, N);
+        }
+        if (fp != NULL) {
+            fwrite(data, 1, N, fp);
         }
     }
     return n;
@@ -209,11 +195,12 @@ void* async_send(void* _o) {
     #endif
     
     if (ftr == NULL) {
-        fprintf(stderr, "failed to open sox for read");
+        fprintf(stderr, "failed to open sox for read\n");
+        o->quit = TRUE;
         return NULL;
     }
 
-    while (TRUE) {
+    while (!o->quit) {
         sox_read(ftr, raw_data, N);
         
         // 32bit, 2 channel -> 16bit, 1 channel
@@ -227,9 +214,7 @@ void* async_send(void* _o) {
         #endif
 
         status = send_data(o->fd, data);
-        if (status == -1) break;
-
-        if (getch() == 'q' || o->quit) break;
+        if (status == -1) o->quit = TRUE;
     }
     o->quit = TRUE;
 
@@ -245,6 +230,7 @@ void* async_recv(void* _o) {
     int status;
 
     sox_format_t *ftw = NULL;
+    FILE *fp = NULL;
     if (o->play) {
         // なぜか1channelでうまく再生できない
         sox_signalinfo_t sig;
@@ -261,42 +247,78 @@ void* async_recv(void* _o) {
         #endif
 
         if (ftw == NULL) {
-            fprintf(stderr, "failed to open sox for write");
+            fprintf(stderr, "failed to open sox for write\n");
+            o->quit = TRUE;
+            return NULL;
+        }
+    }
+    if (o->recfile != NULL) {
+        fp = fopen(o->recfile, "wb");
+        if (fp == NULL) {
+            fprintf(stderr, "failed to open %s\n", o->recfile);
+            o->quit = TRUE;
             return NULL;
         }
     }
 
-    while (TRUE) {
-        status = recv_data(o->fd, ftw);
-        if (status == -1) break;
-
-        if (getch() == 'q' || o->quit) break;
+    while (!o->quit) {
+        status = recv_data(o->fd, fp, ftw);
+        if (status == -1) o->quit = TRUE;
     }
-    o->quit = TRUE;
 
     if (ftw != NULL) sox_close(ftw);
+    if (fp != NULL) fclose(fp);
 
     return NULL;
 }
 
+void *txt(void* _o) {
+    options_t *o = (options_t*)_o;
+    int n;
+    char data[N];
+    char cmd[256];
+    sprintf(cmd, "say -v %s", o->voice);
+    FILE *say = NULL;
+  
+    while(!o->quit) {
+        n = read(0, data, N);
+        if (n == -1) {
+            perror("read");
+            o->quit = TRUE;
+        }
+        if (n == 0) o->quit = TRUE;
+        say = popen(cmd, "w");
+        fprintf(say, "%s\n", data);
+        pclose(say);
+    }
+    return NULL;
+}
+
 void phone(options_t *o) {
+    sox_globals_t *g = sox_get_globals();
+    g->verbosity = 1;
+
     int status;
     status = sox_init();
     if (status != SOX_SUCCESS) err("failed to initialize sox");
     status = sox_format_init();
     if (status != SOX_SUCCESS) err("failed to initialize sox format");
 
-    pthread_t tid1, tid2;
+    pthread_t tid1, tid2, tid3;
     status = pthread_create(&tid1, NULL, async_send, (void*)o);
     if (status != 0) err(strerror(status));
 
     status = pthread_create(&tid2, NULL, async_recv, (void*)o);
     if (status != 0) err(strerror(status));
 
-    fprintf(stderr, "Put q to quit: ");
+    status = pthread_create(&tid3, NULL, txt, (void*)o);
+    if (status != 0) err(strerror(status));
+
+    printf("通話中...\n> ");
 
     pthread_join(tid1, NULL);
     pthread_join(tid2, NULL);
+    pthread_join(tid3, NULL);
 
     sox_format_quit();
     sox_quit();
