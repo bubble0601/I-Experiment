@@ -22,13 +22,15 @@
 typedef struct {
     int isServer;           // Work as server if TRUE
     int port;               // Port number
+    int sub_port;            // Port number for text commnuciation
     struct in_addr address; // IP Address to connect
 
     int play;               // Play received data if TRUE
     char *recfile;          // filename to record sound
-    char voice[256];            // speaker
+    char voice[256];        // speaker
 
     int fd;                 // file descriptor for communication
+    int sub_fd;              // file descriptor for text commnuciation
     int quit;               // end flag
 } options_t;
 
@@ -45,11 +47,13 @@ void err(char *msg) {
 void init(options_t *o) {
     o->isServer = TRUE;
     o->port = -1;
+    o->sub_port = 0;
     o->address.s_addr = 0;
     o->play = TRUE;
     o->recfile = NULL;
     strcpy(o->voice, "Kyoko");
     o->fd = -1;
+    o->sub_fd = -1;
     o->quit = FALSE;
 }
 
@@ -98,21 +102,24 @@ int connect_to(struct in_addr address, int port) {
     return s;
 }
 
-int listen_to(int port) {
+// 引数のportは実際に割り当てたport番号に更新する
+int listen_to(int* port) {
     int ss = socket(PF_INET, SOCK_STREAM, 0);
     if (ss == -1) die("socket");
 
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(*port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
+    // portが0の場合自動で割り当てられる
     int status = bind(ss, (struct sockaddr*)&addr, sizeof(addr));
     if (status == -1) die("bind");
 
+    // port番号を取得
     socklen_t len = sizeof(addr);
-    getsockname(ss,(struct sockaddr*)&addr, &len);
-    printf("ポート%dで", ntohs(addr.sin_port));
+    getsockname(ss, (struct sockaddr*)&addr, &len);
+    *port = ntohs(addr.sin_port);
 
     status = listen(ss, 10);
     if (status == -1) die("listen");
@@ -146,23 +153,26 @@ int send_data(int s, short *data) {
     return status;
 }
 
-int recv_data(int s, FILE *fp, sox_format_t *ft) {
+int recv_data(int s, FILE *fp, sox_format_t *ft, int downsample) {
     char data[N];
     int n = recv(s, data, N, 0);
     if (n == 0) {
         return -1;
     } else if (n == -1) {
-        if (errno == EWOULDBLOCK) n = 0;
         perror("recv");
     } else {
         if (ft != NULL) {
             // 16bit, 1 channel -> 32bit, 2 channel
+            int index = 0;
             sox_sample_t buf[N];
             for (int i = 0; i < N / 2; i++) {
-                buf[2*i] = ((short*)data)[i] << 16;
-                buf[2*i+1] = ((short*)data)[i] << 16;
+                if (downsample && i % 8 == 0) continue;
+                buf[2*index] = ((short*)data)[index] << 16;
+                buf[2*index+1] = ((short*)data)[index] << 16;
+                index++;
             }
-            sox_write(ft, buf, N);
+            if (downsample) sox_write(ft, buf, N * 7 / 8);
+            else sox_write(ft, buf, N);
         }
         if (fp != NULL) {
             fwrite(data, 1, N, fp);
@@ -226,7 +236,7 @@ void* async_send(void* _o) {
 void* async_recv(void* _o) {
     options_t *o = (options_t*)_o;
 
-    int status;
+    int status, count = 0;
 
     sox_format_t *ftw = NULL;
     FILE *fp = NULL;
@@ -261,7 +271,8 @@ void* async_recv(void* _o) {
     }
 
     while (!o->quit) {
-        status = recv_data(o->fd, fp, ftw);
+        if (count++ < 300) status = recv_data(o->fd, fp, ftw, TRUE);
+        else status = recv_data(o->fd, fp, ftw, FALSE);
         if (status == -1) o->quit = TRUE;
     }
 
@@ -271,13 +282,10 @@ void* async_recv(void* _o) {
     return NULL;
 }
 
-void *txt(void* _o) {
+void* text_send(void* _o) {
     options_t *o = (options_t*)_o;
     int n;
     char data[N];
-    char cmd[256];
-    sprintf(cmd, "say -v %s", o->voice);
-    FILE *say = NULL;
   
     while(!o->quit) {
         n = read(0, data, N);
@@ -286,10 +294,33 @@ void *txt(void* _o) {
             o->quit = TRUE;
         }
         if (n == 0) o->quit = TRUE;
-        say = popen(cmd, "w");
-        fprintf(say, "%s\n", data);
-        memset(data, '\0', N);
-        pclose(say);
+        int status = send(o->sub_fd, data, N, MSG_DONTWAIT);
+        if (status == -1) perror("send");
+    }
+    return NULL;
+}
+
+void* text_recv(void* _o) {
+    options_t *o = (options_t*)_o;
+    char data[N];
+    char cmd[256];
+    sprintf(cmd, "say -v %s", o->voice);
+    FILE *say = NULL;
+
+    while (!o->quit) {
+        int n = recv(o->sub_fd, data, N, 0);
+        if (n == 0) {
+            o->quit = TRUE;
+        } else if (n == -1) {
+            perror("recv");
+            o->quit = TRUE;
+        } else {
+            if (!o->play) continue;
+            say = popen(cmd, "w");
+            fprintf(say, "%s\n", data);
+            memset(data, '\0', N);
+            pclose(say);
+        }
     }
     return NULL;
 }
@@ -304,14 +335,17 @@ void phone(options_t *o) {
     status = sox_format_init();
     if (status != SOX_SUCCESS) err("failed to initialize sox format");
 
-    pthread_t tid1, tid2, tid3;
+    pthread_t tid1, tid2, tid3, tid4;
     status = pthread_create(&tid1, NULL, async_send, (void*)o);
     if (status != 0) err(strerror(status));
 
     status = pthread_create(&tid2, NULL, async_recv, (void*)o);
     if (status != 0) err(strerror(status));
 
-    status = pthread_create(&tid3, NULL, txt, (void*)o);
+    status = pthread_create(&tid3, NULL, text_send, (void*)o);
+    if (status != 0) err(strerror(status));
+
+    status = pthread_create(&tid4, NULL, text_recv, (void*)o);
     if (status != 0) err(strerror(status));
 
     printf("通話中...\n> ");
@@ -319,6 +353,7 @@ void phone(options_t *o) {
     pthread_join(tid1, NULL);
     pthread_join(tid2, NULL);
     pthread_join(tid3, NULL);
+    pthread_join(tid4, NULL);
 
     sox_format_quit();
     sox_quit();

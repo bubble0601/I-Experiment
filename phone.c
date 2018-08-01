@@ -53,10 +53,6 @@ int parse(options_t *o) {
         return 0;
     } else if (strcmp(token, "3") == 0) {
         return 0;
-    } else if (strcmp(token, "rec") == 0) {
-        if ((token = strtok(NULL, split)) == NULL) return -1;
-        o->recfile = token;
-        return 1;
     } else if (strcmp(token, "quiet") == 0) {
         o->play = FALSE;
         return 1;
@@ -75,6 +71,7 @@ void input_port(options_t *o) {
     while (TRUE) {
         printf("Port: ");
         char line[SIZE];
+        // 何も入力しなければ0.
         fgets(line, N, stdin);
         o->port = atoi(line);
         if (0 <= o->port && o-> port < 65535) break;
@@ -97,35 +94,48 @@ void input_address(options_t *o) {
 void serv(options_t *o) {
     input_port(o);
     
-    int ss = listen_to(o->port);
-    printf("待ち受け中...\n");
+    int ss = listen_to(&o->port);
+    printf("ポート%dで待ち受け中...\n", o->port);
     o->fd = acp(ss);
 
     printf("応答しますか？ [y/n]: ");
     char res[SIZE];
     fgets(res, SIZE, stdin);
+    
+    // 返答
     if (res[0] != 'y') {
         send(o->fd, "n", 1, 0);
         return;
     }
     send(o->fd, "y", 1, 0);
 
+    // テキスト送受信用にもう1つポートを開き、ポート番号を送る
+    int sub_ss = listen_to(&o->sub_port);
+    send(o->fd, &o->sub_port, 4, 0);
+    o->sub_fd = acp(sub_ss);
+
     phone(o);
     close(ss);
+    close(sub_ss);
 }
 
 void client(options_t *o) {
     input_address(o);
     input_port(o);
     
-    int s = connect_to(o->address, o->port);
-    o->fd = s;
+    o->fd = connect_to(o->address, o->port);
 
     printf("呼び出し中...\n");
     char res[SIZE];
+
     recv(o->fd, res, 1, 0);
     if (res[0] != 'y') return;
+    
+    recv(o->fd, res, 4, 0);
+    o->sub_port = *((int*)res);
+    o->sub_fd = connect_to(o->address, o->sub_port);
 
     phone(o);
-    close(s);
+    close(o->fd);
+    close(o->sub_fd);
 }
